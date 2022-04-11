@@ -1,0 +1,106 @@
+---
+title: "160A HW2"
+author: "Tianyi Li"
+date: '2022-04-08'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(readr)
+library(dplyr)
+```
+
+
+```{r}
+abalone <- read_csv("abalone.csv")
+head(abalone)
+```
+
+Question 1
+```{r}
+abalone["age"] <- abalone["rings"]+1.5
+ggplot(abalone,aes(x=age))+geom_histogram(bins=30)
+```
+The age presents a normal distribution, with a peak appears about age at 11.
+
+Question 2
+```{r}
+set.seed(1202)
+abalone_split<-initial_split(abalone,prop=0.80,
+                             strata = age )
+abalone_train<-training(abalone_split)
+abalone_test<-testing(abalone_split)
+```
+
+Question 3
+```{r}
+abalone_training<- abalone_train %>% select(-rings)
+abalone_recipe<-recipe(age ~ ., data=abalone_training) %>% 
+  step_dummy(all_nominal_predictors())
+```
+
+```{r}
+abalone_mod<-abalone_recipe %>% 
+  step_interact(terms= ~ starts_with("type"):shucked_weight+
+                  longest_shell:diameter+
+                  shucked_weight:shell_weight) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+abalone_mod
+```
+
+Question 4
+```{r}
+lm_model<-linear_reg() %>% 
+  set_engine("lm")
+```
+
+Question 5
+```{r}
+lm_wflow<-workflow() %>% 
+  add_model(lm_model) %>% 
+  add_recipe(abalone_recipe)
+```
+
+Question 6
+```{r}
+lm_fit<-fit(lm_wflow,abalone_training)
+female_abalone_age<-data.frame(type="F",longest_shell=0.50,diameter=0.10,height
+                               =0.30, whole_weight=4,shucked_weight=1,
+                               viscera_weight=2,shell_weight=1)
+predict(lm_fit,new_data=female_abalone_age)
+```
+```{r}
+lm_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+```
+
+Question 7
+```{r}
+library(yardstick)
+abalone_train_res <- predict(lm_fit, new_data = abalone_training %>% select(-age))
+abalone_train_res <- bind_cols(abalone_train_res, abalone_training %>% select(age))
+abalone_train_res %>% 
+  head()
+```
+
+```{r}
+abalone_train_res %>% 
+  ggplot(aes(x= .pred, y=age))+
+  geom_point(alpha=0.2)+
+  geom_abline(lty=2)+
+  theme_bw()+
+  coord_obs_pred()
+abalone_metrics<-metric_set(rmse,rsq,mae)
+abalone_metrics(abalone_train_res, truth=age,
+                estimate=.pred)
+```
+The R-squared of approximately 53% shows that 53% of the data fit the regression model.
