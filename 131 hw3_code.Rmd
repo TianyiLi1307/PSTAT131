@@ -1,0 +1,172 @@
+---
+title: "131 hw3"
+author: "Tianyi Li"
+date: '2022-04-16'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+```{r}
+library(ggplot2)
+library(tidymodels)
+library(ISLR)  
+library(ISLR2) 
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR) 
+tidymodels_prefer()
+```
+
+```{r}
+titanic <- read.csv("titanic.csv")
+head(titanic)
+titanic$survived<-factor(titanic$survived, levels=c('Yes','No'))
+titanic$pclass<-factor(titanic$pclass)
+```
+Question 1
+
+This dataset can be divided into different subgroups, and stratified sampling can generate representations more accurately of the population.
+
+```{r}
+set.seed(1202)
+titanic_split<-initial_split(titanic,prop=0.80,
+                             strata = survived )
+titanic_train<-training(titanic_split)
+titanic_test<-testing(titanic_split)
+```
+
+Question 2
+
+The number of passengers who survived is significantly more than that of didn't survived.
+
+```{r}
+ggplot(titanic_train,aes(x=survived))+geom_bar()
+```
+
+Question 3
+
+I see a symmetric and evenly distributed pattern. 
+age and sib_sp are negatively correlated, parch and sib_sp are positively correlated.
+
+```{r}
+cor_titanic <- titanic_train %>%
+  select(is.numeric) %>%
+  correlate()
+rplot(cor_titanic)
+```
+
+Question 4
+```{r}
+titanic_recipe <- recipe(survived ~ pclass + sex + age + sib_sp + 
+                           parch + fare, data = titanic_train) %>% 
+  step_impute_linear(age) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact(terms= ~ starts_with("sex"):fare+
+                  age:fare)
+titanic_recipe
+```
+
+Question 5
+```{r}
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+log_wkflow <- workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(titanic_recipe)
+log_fit <- fit(log_wkflow, titanic_train)
+```
+
+Question 6
+```{r}
+lda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+lda_wkflow <- workflow() %>% 
+  add_model(lda_mod) %>% 
+  add_recipe(titanic_recipe)
+lda_fit <- fit(lda_wkflow, titanic_train)
+```
+
+Question 7
+```{r}
+qda_mod <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+qda_wkflow <- workflow() %>% 
+  add_model(qda_mod) %>% 
+  add_recipe(titanic_recipe)
+qda_fit <- fit(qda_wkflow, titanic_train)
+```
+
+Question 8
+```{r}
+nb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+nb_wkflow <- workflow() %>% 
+  add_model(nb_mod) %>% 
+  add_recipe(titanic_recipe)
+nb_fit <- fit(nb_wkflow, titanic_train)
+```
+
+Question 9
+
+Logistic Regression model achieved the highest accuracy.
+
+```{r}
+log_reg_acc <- augment(log_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+log_reg_acc
+```
+```{r}
+lda_acc <- augment(lda_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+lda_acc
+```
+```{r}
+qda_acc <- augment(qda_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+qda_acc
+```
+```{r}
+nb_acc <- augment(nb_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+nb_acc
+```
+```{r}
+accuracies <- c(log_reg_acc$.estimate, lda_acc$.estimate, 
+                nb_acc$.estimate, qda_acc$.estimate)
+models <- c("Logistic Regression", "LDA", "Naive Bayes", "QDA")
+results <- tibble(accuracies = accuracies, models = models)
+results %>% 
+  arrange(-accuracies)
+```
+
+Question 10
+
+The model performs fairly, not very accurately. The value differ because the model is optimized for the training accuracy.
+
+```{r}
+predict(log_fit, new_data = titanic_test, type = "prob")
+augment(log_fit, new_data = titanic_test) %>%
+  conf_mat(truth = survived, estimate = .pred_class) 
+```
+```{r}
+augment(log_fit, new_data = titanic_test) %>%
+  roc_curve(survived, .pred_Yes) %>%
+  autoplot()
+```
+```{r}
+augment(log_fit, new_data = titanic_test) %>%
+  roc_auc(survived,.pred_Yes)
+```
+
+
+
