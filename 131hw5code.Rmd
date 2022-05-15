@@ -1,0 +1,139 @@
+---
+title: "131 hw5_code"
+author: "Tianyi Li"
+date: '2022-05-14'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+
+```{r}
+library(tidymodels)
+library(ggplot2)
+library(dbplyr)
+library(corrr)
+library(magrittr)
+library(ISLR)
+library(ISLR2)
+library(klaR)
+library(tidyverse)
+library(glmnet)
+tidymodels_prefer()
+```
+
+Exercise 1
+
+The names in this data set are now unique and only consist of the '_' character, numbers, and letters. It is useful for ease of piping with '%>%'.
+
+```{r}
+library(janitor)
+pokemon<-read.csv('Pokemon.csv')
+pokemon<-clean_names(pokemon)
+pokemon
+```
+
+Exercise 2
+
+There are 18 classes of the outcome, and Flying contains the least Pokemon, and Fairy, Fighting, Ice, Poison, and Steel also contain less than 30 Pokemon.
+
+```{r}
+ggplot(data=pokemon,aes(x=type_1))+geom_bar()
+pokemon<-pokemon %>%
+  filter(type_1 %in% c("Bug","Fire","Grass","Normal","Water","Psychic"))
+pokemon$type_1<-factor(pokemon$type_1)
+pokemon$legendary<-factor(pokemon$legendary)
+```
+
+Exercise 3
+```{r}
+pokemon_split <- initial_split(pokemon, prop = 0.80,strata = type_1)
+pokemon_train <- training(pokemon_split)
+pokemon_test <- testing(pokemon_split)
+dim(pokemon_train)
+dim(pokemon_test)
+```
+
+```{r}
+pokemon_folds <- vfold_cv(pokemon_train, v = 5, strata=type_1)
+pokemon_folds
+```
+
+Exercise 4
+```{r}
+pokemon_recipe <- recipe(type_1 ~ legendary + generation + sp_atk +
+                           attack + speed + defense+hp+sp_def,
+                         data = pokemon_train) %>% 
+  step_dummy(legendary,generation) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+```
+
+Exercise 5
+
+There will be 500 models.
+
+```{r}
+pokemon_spec <- 
+  multinom_reg(penalty = tune(), mixture = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+
+pokemon_workflow <- workflow() %>% 
+  add_recipe(pokemon_recipe) %>% 
+  add_model(pokemon_spec)
+
+penalty_grid <- grid_regular(penalty(range = c(-5, 5)), mixture(range=c(0,1)),
+                             levels = 10)
+penalty_grid
+```
+
+Exercise 6
+
+Smaller values of penalty and mixture produce better accuracy and ROC_AUC.
+
+```{r}
+tune_res <- tune_grid(
+  pokemon_workflow,
+  resamples = pokemon_folds, 
+  grid = penalty_grid
+)
+autoplot(tune_res)
+```
+
+Exercise 7
+```{r}
+best_penalty<-select_best(tune_res,metrix="roc_auc")
+pokemon_final<-finalize_workflow(pokemon_workflow,best_penalty)
+pokemon_final_fit <- fit(pokemon_final, data = pokemon_train)
+predict(pokemon_final_fit,new_data=pokemon_test,type="class")
+test_acc<-augment(pokemon_final_fit,new_data=pokemon_test) %>%
+  accuracy(truth=type_1,estimate=.pred_class)
+test_acc
+```
+
+Exercise 8
+
+The overall ROC_AUC is 0.6349653. The model did not do well since the overall accuracy is 0.4468085. The 'Normal' Pokemon type is the model best at predicting given that its curve has the largest area above the ROC curve. The 'Psychic' is worst at predicting, since it's curve has the largest area below the ROC curve. This is might because the data size of 'Normal' type is larger and that of 'Psychic' type is smaller, which result in smaller and larger bias. 
+
+```{r}
+augment(pokemon_final_fit,new_data=pokemon_test)%>%
+  roc_auc(type_1,.pred_Bug,.pred_Fire,.pred_Grass,.pred_Normal,
+          .pred_Water,.pred_Psychic)
+```
+```{r}
+augment(pokemon_final_fit,new_data=pokemon_test)%>%
+  roc_curve(type_1,.pred_Bug,.pred_Fire,.pred_Grass,.pred_Normal,
+          .pred_Water,.pred_Psychic)%>%
+  autoplot()
+```
+
+```{r}
+augment(pokemon_final_fit,new_data=pokemon_test)%>%conf_mat(
+  truth=type_1,.pred_class)%>%
+  autoplot(type="heatmap")
+```
+
