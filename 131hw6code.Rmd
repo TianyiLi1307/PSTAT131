@@ -1,0 +1,154 @@
+---
+title: "131hw6_code"
+author: "Tianyi Li"
+date: '2022-05-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(ISLR)
+library(rpart.plot)
+library(vip)
+library(janitor)
+library(randomForest)
+library(xgboost)
+library(ggplot2)
+library(corrr)
+```
+
+Question 1
+```{r}
+pokemon<-read.csv('Pokemon.csv')
+pokemon<-clean_names(pokemon)
+pokemon<-pokemon %>%
+  filter(type_1 %in% c("Bug","Fire","Grass","Normal","Water","Psychic"))
+pokemon$type_1<-factor(pokemon$type_1)
+pokemon$legendary<-factor(pokemon$legendary)
+pokemon_split <- initial_split(pokemon, prop = 0.80,strata = type_1)
+pokemon_train <- training(pokemon_split)
+pokemon_test <- testing(pokemon_split)
+pokemon_folds <- vfold_cv(pokemon_train, v = 5, strata=type_1)
+pokemon_recipe <- recipe(type_1 ~ legendary + generation + sp_atk +
+                           attack + speed + defense+hp+sp_def,
+                         data = pokemon_train) %>% 
+  step_dummy(legendary,generation) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+```
+
+Question 2
+```{r}
+cor_pokemon_train <- pokemon_train %>%
+  select(where(is.numeric)) %>%
+  cor(use = "pairwise.complete.obs", method = "pearson")
+rplot(cor_pokemon_train)
+```
+
+Question 3
+```{r}
+tree_spec<-decision_tree() %>%
+  set_engine("rpart")
+class_tree_spec<-tree_spec %>%
+  set_mode("classification")
+tree_workflow<-workflow() %>%
+  add_model(class_tree_spec %>% set_args(cost_complexity=tune())) %>%
+  add_recipe(pokemon_recipe)
+set.seed(1202)
+pokemon_folds<-vfold_cv(pokemon_train)
+param_grid<-grid_regular(cost_complexity(range = c(-3, -1)),levels=10)
+tune_res<-tune_grid(
+  tree_workflow,
+  resamples=pokemon_folds,
+  grid=param_grid,
+  metrics=metric_set(roc_auc)
+)
+autoplot(tune_res)
+```
+
+Question 4
+```{r}
+collect_metrics(tune_res)
+arrange(tune_res)
+best_complexity<-select_best(tune_res)
+best_complexity
+```
+
+Question 5
+```{r}
+class_tree_final<-finalize_workflow(tree_workflow,best_complexity)
+class_tree_final_fit<-fit(class_tree_final,data=pokemon_train)
+class_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+Question 5
+```{r}
+class_forest_spec<-rand_forest() %>%
+  set_engine("ranger",importance="impurity") %>%
+  set_mode("classification")
+param_grid2<-grid_regular(mtry(range = c(1, 8)), trees(range = c(1,8)),
+                          min_n(range = c(1,8)),  levels = 8)
+forest_workflow<-workflow() %>%
+  add_model(class_forest_spec %>% set_args(mtry = tune(), trees = tune(),
+                                           min_n = tune())) %>%
+  add_recipe(pokemon_recipe)
+```
+
+Question 6
+```{r}
+install.packages("ranger")
+tune_res_forest<-tune_grid(
+  forest_workflow,
+  resamples = pokemon_folds,
+  grid = param_grid2,
+  metrics = metric_set(roc_auc)
+)
+autoplot(tune_res_forest)
+```
+
+Question 7
+```{r}
+collect_metrics(tune_res_forest)
+arrange(tune_res_forest)
+best_complexity2<-select_best(tune_res_forest)
+best_complexity2
+```
+
+Question 8
+```{r}
+class_tree_final_fit %>%
+  pull_workflow_fit() %>%
+  vip()
+```
+
+Question 9
+```{r}
+boost_spec <- boost_tree(trees = c(10,2000), tree_depth = 4) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+param_grid_boost <- grid_regular(trees(range = c(10, 2000)),  levels = 10)
+boost_workflow <- workflow() %>%
+  add_model(boost_spec %>% set_args(trees = tune())) %>%
+  add_recipe(pokemon_recipe)
+tune_res_boost <- tune_grid(
+  boost_workflow,
+  resamples = pokemon_folds,
+  grid = param_grid_boost,
+  metrics = metric_set(roc_auc)
+)
+autoplot(tune_res_boost)
+collect_metrics(tune_res_boost)
+arrange(tune_res_boost)
+best_complexity3<-select_best(tune_res_boost)
+best_complexity3
+```
+
+
