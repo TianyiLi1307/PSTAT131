@@ -1,0 +1,599 @@
+---
+title: "Tianyi Final Project"
+author: "Tianyi Li"
+date: '2022-06-03'
+output: html_document
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+# Introduction
+
+The purpose of this project is to generate models which analyze the composition
+of Airbnb in Singapore.
+
+What is Airbnb?
+  
+  Airbnb is an American company that operates an online marketplace for lodging, primarily homestays for vacation rentals, and tourism activities. Based in San Francisco, California, the platform is accessible via website and mobile app. Airbnb does not own any of the listed properties; instead, it profits by receiving commission from each booking.The company name "Airbnb" stands for "Air Bed and Breakfast," which reflects the co-founders' early origins --- they invited paying guests to sleep on an air mattress in their living room to help them cover the rent. (From Wikipedia)
+
+# Loading Data and Packages
+
+Key variables:
+
+id: integer variable, Airbnb's unique identifier for the listing, has nothing to do with numerical value.
+
+room_type: text variable, there are 4 room types, including entire home/apartment,shared room, private room, and hotel room
+
+minimum_nights: integer variable, the minimum number of night stay for the listing
+
+calculated_host_listings_count: the number of listings the host has in the current scrape, in tAhe city/region geography
+
+number_of_reviews_ltm: the number of reviews the listing has in the last 12 months
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(ggplot2)
+library(dbplyr)
+library(corrr)
+library(magrittr)
+library(ISLR)
+library(ISLR2)
+library(klaR)
+library(rpart.plot)
+library(glmnet)
+library(randomForest)
+library(xgboost)
+library(class)
+library(kernlab)
+library(stringr)
+library(purrr)
+library(corrplot)
+tidymodels_prefer()
+```
+
+```{r}
+Singapore<-read_csv("Singapore.csv")%>% 
+  mutate(host_name = factor(host_name))%>% 
+  mutate(name = factor(name))%>% 
+  mutate(neighbourhood_group = factor(neighbourhood_group)) %>% 
+  mutate(neighbourhood = factor(neighbourhood)) %>%
+  mutate(room_type = factor(room_type)) %>% 
+  mutate(room_type = factor(room_type))
+```
+
+# Data Cleaning
+
+Clean names
+```{r}
+Singapore<-Singapore %>% 
+  clean_names()
+```
+
+Deselect unimportant variable license, this is a text variable, which contains 
+the licence/permit/registration number of each listing.
+
+```{r}
+Singapore<-Singapore %>% 
+  select(-name,-license,-last_review)
+```
+
+Remove the listings which contain invalid statistics.
+
+```{r}
+count(Singapore)
+sum(is.na(Singapore))
+row_status<-complete.cases(Singapore)
+Singapore<-Singapore[row_status,]
+sum(is.na(Singapore))
+```
+
+# Data split
+```{r}
+Singapore_split<-Singapore %>% 
+  initial_split(prop=0.8,strata=number_of_reviews_ltm)
+Singapore_train<-training(Singapore_split)
+Singapore_test<-testing(Singapore_split)
+```
+The training data set contains 1419 observations, and the testing data set 
+contains 356 observations.
+
+
+# Exploratory Data Analysis
+
+This entire exploratory data analysis will be based on the training set, which has 1419 observations.
+
+```{r}
+ggplot(data=Singapore_train,aes(x=room_type))+geom_bar(fill="steelblue")+
+  labs(title = "Composition of Room Types",
+       x="Room Type",
+       y="Listing")+
+  theme_minimal()+
+  coord_flip()
+```
+Airbnb hosts can list entire homes/apartments, private/shared rooms, and hotel rooms. Depending on the room type and activity, a residential Airbnb listing could be more like a hotel, disruptive for neighbours, taking away housing, and illegal.
+
+We can see that most of the listings are private room and entire home/apartment, while the numbers of hotel room and shared room are relatively lower 
+
+```{r}
+ggplot(Singapore_train, aes(x = number_of_reviews_ltm, y = room_type)) +
+  labs(title = "Number of Reviews of Room Types",
+       x="Number of Reviews",
+       y="Room Type")+
+  geom_point()
+```
+Similar to the pattern of composition of room types, the numbers of reviews in the last 12 months of private room and entire home/apartment are much higher than that of shared room and hotel room. Also, the numbers of reviews of most listings are less than 20, and only a small part of private rooms and entire home/apartment have reviews more than 20 in the last year.
+
+
+```{r}
+ggplot(Singapore_train, aes(price)) +
+  geom_histogram(bins = 30, color = "white") +
+  facet_wrap(~room_type, scales = "free_y") +
+  xlim(0,500)+
+  labs(
+    title = "Histogram of Price by Room Type"
+  )
+```
+```{r}
+ggplot(Singapore_train, aes(reorder(room_type, price), price)) +
+  geom_boxplot(varwidth = TRUE)+
+  scale_y_discrete(0,200)+
+  coord_flip()+
+  labs(
+    title = "Price by Room Type",
+    x = "Room Type",
+    y="Price")
+```
+
+By the histogram, we can observe that the prices of four different room types are all left-skewed, from a range of 0 to 500 Singapore dollars per night, which means that most of listings has a price that is lower than 500 dollars. While the prices of entire home/apartment and hotel room varies at a wide range, the scales of prices of private room and shared room are relatively shorter.
+
+I think it's because of the diversity of entire home/apartment and hotel room, that they can vary from many factors, such as sizes and locations, and this reason also decides their higher prices. On the other hand, the size of private rooms shared rooms are much smaller, and so are their privacy, therefore their prices vary less from each listings and are relatively lower. 
+
+```{r}
+Singapore_train %>% 
+  select(is.numeric,-id,-host_id,-reviews_per_month,-number_of_reviews) %>% 
+  cor() %>% 
+  corrplot(type = "lower")
+```
+We can see that almost every variable is not correlated to each other, which makes sense since the most important factors that affects a listing's price and reviews are its size, location, cleanliness, etc. 
+
+
+# Model Building
+
+# Fit a linear regression model
+
+```{r}
+set.seed(1202)
+
+lm_spec <- linear_reg() %>% 
+  set_mode("regression") %>% 
+  set_engine("lm")
+
+lm_fit<-lm_spec %>% 
+  fit(number_of_reviews_ltm~latitude+longitude+minimum_nights+
+        price+calculated_host_listings_count+availability_365,
+      data=Singapore_train)
+
+augment(lm_fit,new_data=Singapore_train) %>% 
+  rmse(truth=number_of_reviews_ltm,estimate=.pred)
+
+augment(lm_fit,new_data=Singapore_test) %>% 
+  rmse(truth=number_of_reviews_ltm,estimate=.pred)
+```
+
+```{r}
+Singapore_train_res<-predict(lm_fit,new_data = Singapore_train %>% 
+                               select(-number_of_reviews_ltm))
+
+Singapore_train_res<-bind_cols(Singapore_train_res,Singapore_train %>% 
+                                 select(number_of_reviews_ltm))
+
+Singapore_train_res %>% 
+  ggplot(aes(x= .pred,y=number_of_reviews_ltm))+
+  geom_point(alpha=0.2)+
+  geom_abline(lty=2)+
+  theme_bw()+
+  coord_obs_pred()
+```
+We can see that the model didn't do well, since if it did well, the dots would form a straight line.
+
+
+# Fit a polynomial regression model
+
+```{r}
+Singapore_recipe <-recipe(number_of_reviews_ltm~price,
+                          data = Singapore_train) %>% 
+  step_poly(price,degree=2)
+
+poly_wf<-workflow() %>% 
+  add_recipe(Singapore_recipe) %>% 
+  add_model(lm_spec)
+
+poly_fit<-fit(poly_wf,data=Singapore_train)
+
+augment(poly_fit,new_data = Singapore_train) %>% 
+  rmse(truth=number_of_reviews_ltm,estimate=.pred)
+
+augment(poly_fit,new_data = Singapore_test) %>% 
+  rmse(truth=number_of_reviews_ltm,estimate=.pred)
+```
+
+```{r}
+Singapore_train_res<-predict(poly_fit,new_data = Singapore_train %>% 
+                               select(-number_of_reviews_ltm))
+
+Singapore_train_res<-bind_cols(Singapore_train_res,Singapore_train %>% 
+                                 select(number_of_reviews_ltm))
+
+Singapore_train_res %>% 
+  ggplot(aes(x= .pred,y=number_of_reviews_ltm))+
+  geom_point(alpha=0.2)+
+  geom_abline(lty=2)+
+  theme_bw()+
+  coord_obs_pred()
+```
+Similarly, the model didn't do well.
+
+```{r}
+poly_tuned_rec<-recipe(number_of_reviews_ltm ~ price, data = Singapore_train) %>%
+  step_poly(price, degree = tune())
+
+poly_tuned_wf <- workflow() %>%
+  add_recipe(poly_tuned_rec) %>%
+  add_model(lm_spec)
+
+
+train_folds <- vfold_cv(Singapore_train,v=10)
+
+degree_grid <- grid_regular(degree(range = c(1, 10)), levels = 10)
+
+tune_res <- tune_grid(
+  object = poly_tuned_wf, 
+  resamples = train_folds, 
+  grid = degree_grid
+)
+
+autoplot(tune_res)
+```
+
+We want it to only show the best performing models
+
+```{r}
+show_best(tune_res,metric="rmse")
+```
+
+From the output we can see that it selected degree=1
+
+```{r}
+select_by_one_std_err(tune_res, degree, metric = "rmse")
+best_degree <- select_by_one_std_err(tune_res, degree, metric = "rmse")
+final_wf <- finalize_workflow(poly_wf, best_degree)
+
+```
+Now we fit the workflow and guarantee that it is fitted on the training data set and testing data set. Then we can assess its accuracy.
+
+```{r}
+final_fit <- fit(final_wf, Singapore_train)
+augment(final_fit, new_data = Singapore_train) %>%
+  rmse(truth = number_of_reviews_ltm, estimate = .pred)
+augment(final_fit, new_data = Singapore_test) %>%
+  rmse(truth = number_of_reviews_ltm, estimate = .pred)
+```
+
+# Fit a ridge regresion model
+
+Visualize how the magnitude of the coefficients are being regularized towards 
+zero as the penalty goes up.
+
+```{r}
+ridge_spec <- linear_reg(mixture = 0, penalty = 0) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+ridge_fit <- fit(ridge_spec, number_of_reviews_ltm ~ .,data = Singapore_train)
+
+tidy(ridge_fit)
+
+ridge_fit %>%
+  extract_fit_engine() %>%
+  plot(xvar = "lambda")
+```
+
+Create a recipe
+
+```{r}
+ridge_recipe <- 
+  recipe(formula = number_of_reviews_ltm ~ ., data = Singapore_train) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors())
+
+ridge_spec <- 
+  linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+
+ridge_workflow <- workflow() %>% 
+  add_recipe(ridge_recipe) %>% 
+  add_model(ridge_spec)
+
+penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+tune_res <- tune_grid(
+  ridge_workflow,
+  resamples = train_folds, 
+  grid = penalty_grid
+)
+autoplot(tune_res)
+```
+
+It's fairly clear that the amount of regularization have different influences on the performance metrics.
+
+Find the best model, and apply it on the training and testing data set to validate its performance.
+
+```{r}
+collect_metrics(tune_res)
+best_penalty <- select_best(tune_res, metric = "rsq")
+ridge_final <- finalize_workflow(ridge_workflow, best_penalty)
+ridge_final_fit <- fit(ridge_final, data = Singapore_train)
+augment(ridge_final_fit, new_data = Singapore_train) %>%
+  rsq(truth = number_of_reviews_ltm, estimate = .pred)
+augment(ridge_final_fit, new_data = Singapore_test) %>%
+  rsq(truth = number_of_reviews_ltm, estimate = .pred)
+```
+
+# Fit a lasso regression model
+
+```{r}
+lasso_recipe <- 
+  recipe(formula = number_of_reviews_ltm ~ .,data = Singapore_train) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors())
+
+lasso_spec <- 
+  linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet") 
+
+lasso_workflow <- workflow() %>% 
+  add_recipe(lasso_recipe) %>% 
+  add_model(lasso_spec)
+
+penalty_grid <- grid_regular(penalty(range = c(-2, 2)), levels = 50)
+
+tune_res <- tune_grid(
+  lasso_workflow,
+  resamples = train_folds, 
+  grid = penalty_grid
+)
+
+autoplot(tune_res)
+
+```
+
+Select the best value of penalty, find the best model and predict on the traning and testing data set.
+
+```{r}
+best_penalty <- select_best(tune_res, metric = "rsq")
+lasso_final <- finalize_workflow(lasso_workflow, best_penalty)
+lasso_final_fit <- fit(lasso_final, data = Singapore_train)
+augment(lasso_final_fit, new_data = Singapore_train) %>%
+  rsq(truth = number_of_reviews_ltm, estimate = .pred)
+augment(lasso_final_fit, new_data = Singapore_test) %>%
+  rsq(truth = number_of_reviews_ltm, estimate = .pred)
+```
+
+# Fit a regression tree model
+
+```{r}
+tree_spec <- decision_tree() %>%
+  set_engine("rpart")
+reg_tree_spec <- tree_spec %>%
+  set_mode("regression")
+reg_tree_fit <- fit(reg_tree_spec,number_of_reviews_ltm ~ .,
+                    data=Singapore_train)
+augment(reg_tree_fit, new_data = Singapore_train) %>%
+  rmse(truth = number_of_reviews_ltm, estimate = .pred)
+augment(reg_tree_fit, new_data = Singapore_test) %>%
+  rmse(truth = number_of_reviews_ltm, estimate = .pred)
+```
+
+Show the regression decision tree
+
+```{r}
+reg_tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+Find the best performing decision tree
+
+```{r}
+reg_tree_wf <- workflow() %>%
+  add_model(reg_tree_spec %>% set_args(cost_complexity = tune())) %>%
+  add_formula(number_of_reviews_ltm ~ .)
+
+set.seed(1202)
+ames_fold <- vfold_cv(Singapore_train)
+
+param_grid <- grid_regular(cost_complexity(range = c(-4, -1)), levels = 10)
+
+tune_res <- tune_grid(
+  reg_tree_wf, 
+  resamples = ames_fold, 
+  grid = param_grid
+)
+```
+
+Visualize the result
+
+```{r}
+autoplot(tune_res)
+```
+
+Now select the best-performing model based on rmse, and fit the final model on the whole training data set. Then visualize the model to see the tree.
+
+```{r}
+best_complexity <- select_best(tune_res, metric = "rmse")
+reg_tree_final <- finalize_workflow(reg_tree_wf, best_complexity)
+reg_tree_final_fit <- fit(reg_tree_final, data = Singapore_train)
+reg_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+Check the performance on both training and testing data set
+
+```{r}
+augment(reg_tree_final_fit, new_data = Singapore_train) %>%
+  rmse(truth = number_of_reviews_ltm, estimate = .pred)
+augment(reg_tree_final_fit, new_data = Singapore_test) %>%
+  rmse(truth = number_of_reviews_ltm, estimate = .pred)
+```
+
+# Fit a SVM model
+
+```{r}
+svm_linear_spec <- svm_poly(degree = 1) %>%
+  set_mode("regression") %>%
+  set_engine("kernlab", scaled = FALSE)
+
+svm_linear_fit <- svm_linear_spec %>% 
+  set_args(cost = 10) %>%
+  fit(number_of_reviews_ltm ~ ., data = Singapore_train)
+svm_linear_fit
+```
+
+```{r}
+svm_model <-svm_poly(
+    cost = tune(),
+    mode = "regression") %>%
+  set_engine("kernlab")
+
+svm_workflow <- workflow() %>%
+  add_model(svm_model) %>%
+  add_recipe(Singapore_recipe)
+
+set.seed(1202)
+
+Singapore_grid_svm <- grid_regular(cost(range = c(-3, -1)), levels = 10)
+
+Singapore_results_svm <- svm_workflow %>%
+    tune_grid(resamples=train_folds, grid=Singapore_grid_svm)
+```
+
+Visualize the result
+
+```{r}
+autoplot(Singapore_results_svm, metric = "rmse")
+```
+
+```{r}
+show_best(Singapore_results_svm, metric = "rmse")
+```
+
+We can see that the lowest rmse occurs when the cost is 0.4286220
+
+```{r}
+Singapore_spec_svm <- svm_poly(cost=0.4286220) %>%
+    set_engine("kernlab")%>%
+    set_mode("regression")
+Singapore_fit_svm <- workflow() %>%
+    add_recipe(Singapore_recipe) %>%
+    add_model(Singapore_spec_svm)%>%
+    fit(data=Singapore_train)
+Singapore_summary_svm <- Singapore_fit_svm %>%
+    predict(Singapore_test) %>%
+    bind_cols(Singapore_test) %>%
+    metrics(truth=number_of_reviews_ltm, estimate=.pred) %>%
+    filter(.metric=="rmse")
+Singapore_summary_svm
+```
+
+Visualize the performance on both training and testing data set
+
+```{r}
+augment(Singapore_fit_svm, new_data = Singapore_train) %>%
+  ggplot(aes(number_of_reviews_ltm, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.5)
+
+augment(Singapore_fit_svm, new_data = Singapore_test) %>%
+  ggplot(aes(number_of_reviews_ltm, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.5)
+```
+
+# Fit a random forest model
+
+```{r}
+rf_model <- rand_forest(
+    mtry = tune(),
+    mode = "regression") %>%
+  set_engine("ranger")
+
+rf_workflow <- workflow() %>%
+  add_model(rf_model) %>%
+  add_recipe(Singapore_recipe)
+
+set.seed(1202)
+
+Singapore_grid_rf <- tibble(mtry=seq(from=1, to=10, by=2))
+
+Singapore_results_rf <- rf_workflow %>%
+    tune_grid(resamples=train_folds, grid=Singapore_grid_rf)
+```
+```{r}
+autoplot(Singapore_results_rf, metric = "rmse")
+```
+
+```{r}
+show_best(Singapore_results_rf, metric = "rmse")
+```
+
+We can see that the lowest rmse occurs when the mtry is 3
+
+```{r}
+Singapore_spec_rf <- rand_forest(mtry=3) %>%
+    set_engine("ranger")%>%
+    set_mode("regression")
+Singapore_fit_rf <- workflow() %>%
+    add_recipe(Singapore_recipe) %>%
+    add_model(Singapore_spec_rf)%>%
+    fit(data=Singapore_train)
+Singapore_summary_rf <- Singapore_fit_rf %>%
+    predict(Singapore_test) %>%
+    bind_cols(Singapore_test) %>%
+    metrics(truth=number_of_reviews_ltm, estimate=.pred) %>%
+    filter(.metric=="rmse")
+Singapore_summary_rf
+```
+Visualize the performance on both training and testing data set
+
+```{r}
+augment(Singapore_fit_rf, new_data = Singapore_train) %>%
+  ggplot(aes(number_of_reviews_ltm, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.5)
+
+augment(Singapore_fit_rf, new_data = Singapore_test) %>%
+  ggplot(aes(number_of_reviews_ltm, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.5)
+```
+
+# Conlcusion
+
+Before the beginning of this project, I thought what affect the number of reviews of  Airbnb the most must be its price, since I thought Airbnbs with lower price would attract more visitors, and consequently more reviews. However, after this analysis on the variables that affects the number of reviews of Airbnb in Singapore, it is clear for me to see that price does not matter that much, given the several models which I used to see how well they performed on predicting the affect of price on number of reviews.
+
+In this analysis, I fit model classes, including linear and polynomial regression model,
+ridge and lasso regression model, regression tree model, and random forest model. I created regression model instead of classification model because I only predict using numerical variables, and regression model predicts a continuous value. As I predicted, the SVM model performed the best, since it generates the lowest root-mean-square-error, or rmse, which presents the difference between sample/population values predicted by a model and the values observed. This is a foreseeable result, because Support Vector Machine works more productive in a high-dimensional space, and it can be used to avoid the difficulties of using linear functions. 
+
+After this course, I learned significant concepts of statistical machine learning, and I am now able to use R programming and practical packages to do exploratory data analysis, model fitting, and statistic visualization. In the future, I will continue to study in the machine learning field, and in this process, I wish I could gain more experiences of data analysis. Airbnb statistics are one of my major interests, and I will use my knowledge to analyze more complicated data set in the future. 
